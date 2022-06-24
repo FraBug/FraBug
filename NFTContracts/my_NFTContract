@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+                                                
+
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/interfaces/IERC2981.sol";
+
+contract SkinnyMouse is ERC721, Ownable, IERC2981 {
+
+    using Strings for uint256;
+    using Counters for Counters.Counter;
+
+    Counters.Counter private currentTokenId;
+
+	address public _recipient;
+	
+    string public uriPrefix = "";
+    string public uriSuffix = ".json";
+	
+    uint256 public cost = 0.05555 ether;
+	uint8 public percentage = 5;
+    uint256 public constant maxcurrentTokenId = 800;
+    uint256 public maxMintAmountPerTx = 10;
+
+	//max Token mintable for one address
+    uint8 public publicMintAmount = 20;
+    uint8 public allowListMintAmount = 5;
+
+    bool public paused = true;
+    bool public isAllowListActive = false;
+
+    bytes32 public whitelistMerkleRoot = 0x0758ddc53129da410a7d4536b32e8f2f00e4edf3568e11b199fdc384d06a55d3;
+
+
+    constructor() ERC721("NomeNFTIntero", "SimboloNFT") {
+        setUriPrefix("https://bafybeiahchad4tzxsgjbsa5hwific2runycyhycxzigejagcj56vgogwda.ipfs.dweb.link/allMetadata/");
+    }
+
+    //currentTokenId limit / tx checks
+    modifier mintCompliance(uint256 _mintAmount) {
+        require(_mintAmount > 0 && _mintAmount <= maxMintAmountPerTx, "Invalid mint amount!");
+        require(currentTokenId.current() + _mintAmount <= maxcurrentTokenId, "Max currentTokenId exceeded!");
+        _;
+    }
+
+    //supply check
+    function totalSupply() public view returns (uint256) {
+        return currentTokenId.current();
+    }
+
+    //Contract enablement functions
+    function setIsAllowListActive(bool _isAllowListActive) external onlyOwner {
+        isAllowListActive = _isAllowListActive;
+    }
+
+    function setPaused(bool _state) public onlyOwner {
+        paused = _state;
+    }
+
+    //merkletree 
+    function _verify(bytes32 leaf, bytes32[] memory proof) internal view returns (bool) {
+        return MerkleProof.verify(proof, whitelistMerkleRoot, leaf);
+    }
+
+    function _leaf(address account) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(account));
+    }
+
+    function setWhitelistMerkleRoot(bytes32 _whitelistMerkleRoot) external onlyOwner {
+        whitelistMerkleRoot = _whitelistMerkleRoot;
+    }
+
+    
+    //public mint function
+    function mint(uint8 _mintAmount) public payable mintCompliance(_mintAmount) {
+        require(!paused, "The contract is paused!");
+        require(!isAllowListActive, "Whitelist is still active");
+
+        require(msg.value >= cost * _mintAmount, "Insufficient funds!");
+
+        _mintLoop(msg.sender, _mintAmount);
+    }
+
+    //allowlist mint function
+    function mintAllowList(uint8 _mintAmount, bytes32[] calldata proof) public payable mintCompliance(_mintAmount) {
+        require(!paused, "The contract is paused"); 
+        require(isAllowListActive, "Whitelist is paused");
+      
+        require(_mintAmount <= allowListMintAmount); 
+        require(msg.value >= cost * _mintAmount, "Insufficient funds!");
+        require(_verify(_leaf(msg.sender), proof), "Invalid proof");
+        
+        _mintLoop(msg.sender, _mintAmount);
+    }
+
+    //safemint function
+    function _mintLoop(address _receiver, uint256 _mintAmount) internal {
+        for (uint256 i = 0; i < _mintAmount; i++) {
+            currentTokenId.increment();
+            _safeMint(_receiver, currentTokenId.current());
+        }
+    }
+
+    function tokenURI(uint256 _tokenId)
+        public
+        view
+        virtual
+        override
+        returns (string memory)
+    {
+    require(
+        _exists(_tokenId),
+        "ERC721Metadata: URI query for nonexistent token"
+    );
+
+    string memory currentBaseURI = _baseURI();
+        return bytes(currentBaseURI).length > 0
+            ? string(abi.encodePacked(currentBaseURI, _tokenId.toString(), uriSuffix))
+            : "";
+    }
+
+    function setCost(uint256 _cost) public onlyOwner {
+        cost = _cost;
+    }
+
+    function setUriPrefix(string memory _uriPrefix) public onlyOwner {
+        uriPrefix = _uriPrefix;
+    }
+
+    function setUriSuffix(string memory _uriSuffix) public onlyOwner {
+        uriSuffix = _uriSuffix;
+    }
+    
+    function _baseURI() internal view virtual override returns (string memory) {
+        return uriPrefix;
+    }
+
+	//Withdraw
+	function withdrawAllBalance(address payable payee) external onlyOwner {
+		payee.transfer(address(this).balance);
+	}
+
+	function withdraw(address payable payee, uint256 amountInWei) external onlyOwner {
+		if(amountInWei <= address(this).balance){
+			payee.transfer(amountInWei);
+		}else{
+			payee.transfer(address(this).balance);
+		}
+	}
+	
+	//ERC2981 implementation
+	function royaltyInfo(uint256 _tokenId, uint256 _salePrice)
+	external 
+	view 
+    override
+	returns (address receiver, uint256 royaltyAmount) {
+		require(_exists(_tokenId), "Nonexistent token");
+		return (payable(_recipient), uint((_salePrice * percentage * 100) / 10000));
+	}	
+	
+	function supportsInterface(bytes4 interfaceId) public view virtual override(ERC721, IERC165) returns (bool) {
+        return (interfaceId == type(IERC2981).interfaceId || super.supportsInterface(interfaceId));
+	}
+
+	function setRoyaltiesPercentage(uint8 _newPercentage) external onlyOwner{
+		require(_newPercentage < 100, "percentage can't be 100 or more");
+		percentage = _newPercentage;
+	}
+
+    function setRoyaltyWallet(address newRecipient) external onlyOwner{
+        require(newRecipient != address(0), "Royalties: new recipient is the zero address");
+        _recipient = newRecipient;
+    }
+	
+	receive () external payable {}
+	fallback () external payable {}
+	
+}
